@@ -255,6 +255,7 @@ public class FatMaster {
             public void retrieveChildren() throws IOException {
                 if (children == null) {
                     children = new TreeMap<>();
+                    if(!isDir()) return;
                     while (sector >= 0) {
                         moveToSec(sector, offset);
                         long fByte = readVal(1);
@@ -361,7 +362,7 @@ public class FatMaster {
                         out = new PrintStream(dest);
                     }
                     byte[] buffer = new byte[(int) (props.get("BPB_BytsPerSec") * props.get("BPB_SecPerClus"))];
-                    long clusId = getClusIdOfSec(sector);
+                    long clusId = dataClusId;
                     long fSize = deProps.get("DIR_FileSize");
                     while (fSize > 0) {
                         moveToSec(firstSectorOfCluster(clusId));
@@ -516,7 +517,7 @@ public class FatMaster {
             if (file != null) {
                 file.close();
             }
-            file = new RandomAccessFile(_file, "rw");
+            file = new RandomAccessFile(_file, "r");
             props = new HashMap<>();
             sprops = new HashMap<>();
 
