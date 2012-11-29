@@ -4,12 +4,8 @@
  */
 package fatmaster;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
+import java.io.*;
+import java.util.*;
 
 /**
  *
@@ -17,20 +13,92 @@ import java.util.HashMap;
  */
 public class FatMaster {
 
-    static final int INTERACTIVE_MODE = 1;
-    static final int PRINT_FAT_INFO = (1 << 1);
-    static final int EXECUTE_SCRIPT = (1 << 2);
-    /**
-     * Bit mask: 0 - Whether to use interactive mode or just execute the stuff
-     * from args 1 - Indicates utilite to print fat image information 2 -
-     * Indicates utilite to run the script
-     */
+    static final int INFO = (1 << 1);
+    static final int LIST = (1 << 2);
+    static final int PRINT = (1 << 3);
+    static final int SAVE = (1 << 0);
     int runningMode = 0;
 
     private boolean isNeeded(int mode_mask) {
-        return (runningMode & mode_mask) == runningMode;
+        return (runningMode & mode_mask) == mode_mask;
     }
-    String printFileName;
+    String fileName = null, info_path = null, list_path = null, save_from = null, save_to = null, print_path = null;
+    int list_depth = -1;
+    int info_depth = -1;
+    final String[] reservedArgs = {"-f", "-i", "-p", "-l", "-ld", "-id", "-s", "-c"};
+
+    private boolean isReservedArg(String s) {
+        for (int i = 0; i < reservedArgs.length; i++) {
+            if (s.equals(reservedArgs[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private FatMaster(String[] args) throws IOException {
+        for (int i = 0; i < args.length; i++) {
+            switch (args[i]) {
+                case "-f":
+                    fileName = args[++i];
+                    break;
+                case "-ld":
+                    list_depth = Integer.parseInt(args[++i].trim());
+                    break;
+                case "-id":
+                    info_depth = Integer.parseInt(args[++i].trim());
+                    break;
+                case "-i":
+                    runningMode |= INFO;
+                    if (i + 1 < args.length && !isReservedArg(args[i + 1])) {
+                        info_path = args[++i];
+                    }
+                    break;
+                case "-p":
+                    runningMode |= PRINT;
+                    print_path = args[++i];
+                    break;
+                case "-l":
+                    runningMode |= LIST;
+                    if (i + 1 < args.length && !isReservedArg(args[i + 1])) {
+                        list_path = args[++i];
+                    }
+                    break;
+                case "-s":
+                    runningMode |= SAVE;
+                    if (i + 1 < args.length && !isReservedArg(args[i + 1])) {
+                        if (i + 2 < args.length && !isReservedArg(args[i + 2])) {
+                            save_from = args[++i];
+                            save_to = args[++i];
+                        } else {
+                            save_to = args[++i];
+                        }
+                    }
+                    break;
+            }
+        }
+        if (fileName != null) {
+            fat = new Fat();
+            fat.open(new File(fileName));
+        } else {
+            System.err.println("Filename not specified!");
+            return;
+        }
+        if (isNeeded(INFO)) {
+            fat.print_info(info_path, info_depth, true);
+        }
+        if (isNeeded(LIST)) {
+            fat.print_info(list_path, list_depth, false);
+        }
+        if (isNeeded(PRINT)) {
+            fat.write(print_path, null);
+        }
+        if (isNeeded(SAVE)) {
+            fat.write(save_from, save_to);
+        }
+        fat.close();
+    }
+    Fat fat;
 
     class Fat {
 
@@ -45,6 +113,20 @@ public class FatMaster {
             public boolean isRootDir = false;
             long sector, offset;
 
+            public boolean isDir() {
+                return is(ATTR_DIRECTORY) || isRootDir;
+            }
+
+            public String getName() {
+                if (longName == null || longName.isEmpty()) {
+                    if (shortName == null || shortName.isEmpty()) {
+                        return "No name";
+                    }
+                    return shortName;
+                }
+                return longName;
+            }
+
             void ensureClusterEnd() throws IOException {
                 long bytsPerSec = props.get("BPB_BytsPerSec");
                 long _sector = sector;
@@ -58,6 +140,23 @@ public class FatMaster {
                         sector = firstSectorOfCluster(sector);
                     }
                 }
+            }
+
+            public DirectoryEntry find(String path) throws IOException {
+                String[] parts = path.split("[/\\\\]+");
+                if (parts.length == 0) {
+                    return this;
+                }
+                DirectoryEntry entry = this;
+                for (int i = (parts[0].isEmpty() ? 1 : 0); i < parts.length; i++) {
+                    entry.retrieveChildren();
+                    DirectoryEntry _candidate = entry.children.get(parts[i]);
+                    if (_candidate == null) {
+                        return null;
+                    }
+                    entry = _candidate;
+                }
+                return entry;
             }
 
             public void read(long clusId) throws IOException {
@@ -126,19 +225,19 @@ public class FatMaster {
                 for (int i = 0; i < lnameBytes.length; i++) {
                     lnameBytes[i] = list.get(lnameBytes.length - 1 - i);
                 }
-                longName = new String(lnameBytes, "utf-16");
                 moveToSec(sector, offset);
                 readKeys(deKeys, deKeys_sz, deProps, deSprops);
                 offset += 32;
                 ensureClusterEnd();
                 shortName = deSprops.get("DIR_Name");
+                longName = new String(lnameBytes, "utf-16");
                 attributes = deProps.get("DIR_Attr").intValue();
-                dataClusId = ((deProps.get("DIR_FstClusHI") << 16) & deProps.get("DIR_FstClusLO"));
+//                System.out.print(shortName+": HI "+Long.toHexString(deProps.get("DIR_FstClusHI"))+" LO "+);
+                dataClusId = ((deProps.get("DIR_FstClusHI") << 16) | deProps.get("DIR_FstClusLO"));
             }
 
             public void renewPointers(long clusId) {
                 sector = firstSectorOfCluster(clusId);
-                System.out.println(shortName+": "+(sector*props.get("BPB_BytsPerSec")));
                 offset = 0;
             }
             public long dataClusId;
@@ -149,12 +248,13 @@ public class FatMaster {
             public final int ATTR_DIRECTORY = 0x10;
             public final int ATTR_ARCHIVE = 0x20;
             public final int ATTR_LONG_NAME = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID;
-            public final String DOT_SHORTNAME = ".\0\0\0\0\0\0\0\0\0\0";
-            ArrayList<DirectoryEntry> children = null;
+            public final String DOT_SHORTNAME = ".          ";
+            public final String DOTDOT_SHORTNAME = "..         ";
+            TreeMap<String, DirectoryEntry> children = null;
 
             public void retrieveChildren() throws IOException {
                 if (children == null) {
-                    children = new ArrayList<>();
+                    children = new TreeMap<>();
                     while (sector >= 0) {
                         moveToSec(sector, offset);
                         long fByte = readVal(1);
@@ -170,10 +270,8 @@ public class FatMaster {
                         child.read(sector, offset);
                         sector = child.sector;
                         offset = child.offset;
-                        if (child.is(ATTR_DIRECTORY)) {
-                            child.renewPointers(child.dataClusId);
-                        }
-                        children.add(child);
+                        child.renewPointers(child.dataClusId);
+                        children.put(child.getName(), child);
                     }
                 }
             }
@@ -183,7 +281,11 @@ public class FatMaster {
             }
 
             public void print_info() throws IOException {
-                print_info(true, true, 0);
+                print_info(0, false);
+            }
+
+            public void print_info(int childrenPrintDepth, boolean verbose) throws IOException {
+                print_info(childrenPrintDepth, verbose, 0);
             }
 
             public void print_indent(int k) {
@@ -192,37 +294,84 @@ public class FatMaster {
                 }
             }
 
-            public void print_info(boolean printChildren, boolean printChildrenRecursive, int indent) throws IOException {
-                print_indent(indent);
-                System.out.println("----------------------");
-                print_indent(indent);
-                System.out.println("Short name: " + shortName);
-                print_indent(indent);
-                System.out.println("Long name: " + longName);
-                print_indent(indent);
-                System.out.println("Read only: " + is(ATTR_READ_ONLY));
-                print_indent(indent);
-                System.out.println("Hidden: " + is(ATTR_HIDDEN));
-                print_indent(indent);
-                System.out.println("System: " + is(ATTR_SYSTEM));
-                print_indent(indent);
-                System.out.println("Directory: " + is(ATTR_DIRECTORY));
-                print_indent(indent);
-                System.out.println("Archive: " + is(ATTR_ARCHIVE));
-                print_indent(indent);
-                System.out.println("Size (KB = 2^10 Bytes): " + (deProps.get("DIR_FileSize") / Math.pow(2, 10)));
-                print_indent(indent);
-                System.out.println("Size (KB = 10^3 Bytes): " + (deProps.get("DIR_FileSize") / Math.pow(10, 3)));
-                if (printChildren && (is(ATTR_DIRECTORY)||isRootDir)) {
+            public void print_info(int childrenPrintDepth, boolean verbose, int indent) throws IOException {
+                if (verbose) {
                     print_indent(indent);
-                    retrieveChildren();
-                    if(children.size()>0) System.out.println("Children:");
-                    else System.out.println("Directory is empty");
-                    for (int i = 0; i < children.size(); i++) {
-                        if (!children.get(i).shortName.equals(
-                                DOT_SHORTNAME)) {
-                            children.get(i).print_info(printChildrenRecursive, printChildrenRecursive, indent + 1);
+                    System.out.println("----------------------");
+                    print_indent(indent);
+                    System.out.println("Short name: " + shortName);
+                    print_indent(indent);
+                    System.out.println("Long name: " + longName);
+                    print_indent(indent);
+                    System.out.println("Read only: " + is(ATTR_READ_ONLY));
+                    print_indent(indent);
+                    System.out.println("Hidden: " + is(ATTR_HIDDEN));
+                    print_indent(indent);
+                    System.out.println("System: " + is(ATTR_SYSTEM));
+                    print_indent(indent);
+                    System.out.println("Directory: " + is(ATTR_DIRECTORY));
+                    print_indent(indent);
+                    System.out.println("Archive: " + is(ATTR_ARCHIVE));
+                    print_indent(indent);
+                    System.out.println("Size (KB = 2^10 Bytes): " + (deProps.get("DIR_FileSize") / Math.pow(2, 10)));
+                    print_indent(indent);
+                    System.out.println("Size (KB = 10^3 Bytes): " + (deProps.get("DIR_FileSize") / Math.pow(10, 3)));
+                } else {
+                    print_indent(indent);
+                    System.out.println(getName());
+                }
+                retrieveChildren();
+                if (verbose && (is(ATTR_DIRECTORY) || isRootDir)) {
+                    print_indent(indent);
+                    System.out.println("Children count: " + (children.size() - (isRootDir ? 0 : 2)));
+                }
+                if ((is(ATTR_DIRECTORY) || isRootDir) && (children.size() - (isRootDir ? 0 : 2)) > 0 && (childrenPrintDepth > indent)) {
+                    if (verbose) {
+                        print_indent(indent);
+                        System.out.println("Children:");
+                    }
+                    Iterator<String> it = children.navigableKeySet().iterator();
+                    do {
+                        String key = it.next();
+                        if (!children.get(key).shortName.equals(DOT_SHORTNAME)
+                                && !children.get(key).shortName.equals(DOTDOT_SHORTNAME)) {
+                            children.get(key).print_info(childrenPrintDepth, verbose, indent + 1);
                         }
+                    } while (it.hasNext());
+                }
+            }
+
+            private void write(File dest) throws IOException {
+                if (isDir()) {
+                    dest.mkdir();
+                    retrieveChildren();
+                    Iterator<String> it = children.navigableKeySet().iterator();
+                    do {
+                        String key = it.next();
+                        if (!children.get(key).shortName.equals(DOT_SHORTNAME)
+                                && !children.get(key).shortName.equals(DOTDOT_SHORTNAME)) {
+                            children.get(key).write(new File(dest.getPath() + File.separator + children.get(key).getName()));
+                        }
+                    } while (it.hasNext());
+                } else {
+                    PrintStream out;
+                    if (dest == null) {
+                        out = System.out;
+                    } else {
+                        out = new PrintStream(dest);
+                    }
+                    byte[] buffer = new byte[(int) (props.get("BPB_BytsPerSec") * props.get("BPB_SecPerClus"))];
+                    long clusId = getClusIdOfSec(sector);
+                    long fSize = deProps.get("DIR_FileSize");
+                    while (fSize > 0) {
+                        moveToSec(firstSectorOfCluster(clusId));
+                        file.read(buffer, 0, (int) Math.min(fSize, (long) buffer.length));
+                        out.write(buffer, 0, (int) Math.min(fSize, (long) buffer.length));
+                        fSize -= buffer.length;
+                        clusId = getNextClusId(clusId);
+                    }
+                    if (dest != null) {
+                        out.close();
                     }
                 }
             }
@@ -289,7 +438,12 @@ public class FatMaster {
         long rootDirSectors, fatSz, totSec, dataSec, countOfClusters, firstDataSector, freeSpace, totSpace;
 
         void moveToSec(long secId, long offset) throws IOException {
+            try{
             file.seek(props.get("BPB_BytsPerSec") * secId + offset);
+            }catch(Exception ex){
+                System.err.println(secId+" "+offset);
+                System.exit(1);
+            }
         }
 
         void moveToSec(long secId) throws IOException {
@@ -321,10 +475,41 @@ public class FatMaster {
             } else {//28 bits
                 val = readVal(4) & 0x0FFFFFFFL;
             }
-            if (val == EOC) {
+            if (val >= EOC) {
                 return -1;
             }
             return val;
+        }
+
+        public void write(String path, String _dest) throws IOException {
+            if (path == null) {
+                path = "/";
+            }
+            DirectoryEntry de = root.find(path);
+            if (de == null) {
+                System.err.println("No such path");
+                return;
+            }
+            if (!de.isDir() && _dest == null) {
+                de.write(null);
+                System.out.println();
+                return;
+            }
+            File _file = new File(_dest);
+            if (!_file.exists() && (_file.getParentFile()!=null&&!_file.getParentFile().exists())) {
+                System.err.println("Neither file nor it's parent directory exist");
+                return;
+            }
+            File dest;
+            if (!_file.exists()) {
+                dest = _file;
+            } else if (_file.isFile() && de.isDir()) {
+                System.err.println("Can't write directory to file");
+                return;
+            } else {
+                dest = new File(_file.getPath() + File.separator + de.getName());
+            }
+            de.write(dest);
         }
 
         void open(File _file) throws IOException {
@@ -332,8 +517,8 @@ public class FatMaster {
                 file.close();
             }
             file = new RandomAccessFile(_file, "rw");
-            props = new HashMap<String, Long>();
-            sprops = new HashMap<String, String>();
+            props = new HashMap<>();
+            sprops = new HashMap<>();
 
             readKeys(keys, keys_sz);
 
@@ -418,33 +603,40 @@ public class FatMaster {
             file.close();
         }
 
-        void print_info(String path) throws IOException {
-            if (path == null) {
-                System.out.printf("Type of FAT: FAT%d\n", type);
-                System.out.println("======= Space information =======");
-                System.out.println("Free space (MB = 10^6 Bytes): " + ((long) (freeSpace / Math.pow(10, 6))));
-                System.out.println("Free space (MB = 2^20 Bytes): " + ((long) (freeSpace >> 20)));
-                System.out.println("Total space (MB = 10^6 Bytes): " + ((long) (totSpace / Math.pow(10, 6))));
-                System.out.println("Total space (MB = 2^20 Bytes): " + ((long) (totSpace >> 20)));
-                //Constraints
-                System.out.println("======= Constraints =======");
-                Object[] map_keys = props.keySet().toArray();
-                Arrays.sort(map_keys);
-                for (int i = 0; i < map_keys.length; i++) {
-                    System.out.printf("%s: %d\n", (String) map_keys[i], props.get((String) map_keys[i]));
-                }
-                map_keys = sprops.keySet().toArray();
-                Arrays.sort(map_keys);
-                for (int i = 0; i < map_keys.length; i++) {
-                    System.out.printf("%s: %s\n", (String) map_keys[i], sprops.get((String) map_keys[i]));
-                }
-                System.out.println("======= Root Directory =======");
-                root.print_info();
+        void print_info(String path, int depth, boolean verbose) throws IOException {
+            if (depth < 0) {
+                depth = Integer.MAX_VALUE;
             }
-        }
-
-        void print_info() throws IOException {
-            print_info(null);
+            if (path == null) {
+                if (verbose) {
+                    System.out.printf("Type of FAT: FAT%d\n", type);
+                    System.out.println("======= Space information =======");
+                    System.out.println("Free space (MB = 10^6 Bytes): " + ((long) (freeSpace / Math.pow(10, 6))));
+                    System.out.println("Free space (MB = 2^20 Bytes): " + ((long) (freeSpace >> 20)));
+                    System.out.println("Total space (MB = 10^6 Bytes): " + ((long) (totSpace / Math.pow(10, 6))));
+                    System.out.println("Total space (MB = 2^20 Bytes): " + ((long) (totSpace >> 20)));
+                    //Constraints
+                    System.out.println("======= Constraints =======");
+                    Object[] map_keys = props.keySet().toArray();
+                    Arrays.sort(map_keys);
+                    for (int i = 0; i < map_keys.length; i++) {
+                        System.out.printf("%s: %d\n", (String) map_keys[i], props.get((String) map_keys[i]));
+                    }
+                    map_keys = sprops.keySet().toArray();
+                    Arrays.sort(map_keys);
+                    for (int i = 0; i < map_keys.length; i++) {
+                        System.out.printf("%s: %s\n", (String) map_keys[i], sprops.get((String) map_keys[i]));
+                    }
+                    System.out.println("======= Root Directory =======");
+                }
+                path = "/";
+            }
+            DirectoryEntry de = root.find(path);
+            if (de == null) {
+                System.err.println("No such path");
+            } else {
+                de.print_info(depth, verbose);
+            }
         }
     }
 
@@ -452,21 +644,6 @@ public class FatMaster {
      * @param args the command line arguments
      */
     public static void main(String[] args) throws IOException {
-        new FatMaster(args);
-    }
-
-    private FatMaster(String[] args) throws IOException {
-        for (int i = 0; i < args.length; i++) {
-            if (args[i].equals("-p")) {
-                printFileName = args[++i];
-                runningMode ^= (1 << 1);
-            }
-        }
-        if (isNeeded(PRINT_FAT_INFO)) {
-            Fat f = new Fat();
-            f.open(new File(printFileName));
-            f.print_info();
-            f.close();
-        }
+        FatMaster fatMaster = new FatMaster(args);
     }
 }
