@@ -166,12 +166,10 @@ public class FatMaster {
             public void read(long _sector, long _offset) throws IOException {
                 sector = _sector;
                 offset = _offset;
-                deProps = new HashMap<>();
-                deSprops = new HashMap<>();
                 ArrayList<Byte> list = new ArrayList<>();
                 int _attrs = ATTR_LONG_NAME;
                 //Going through long-name entries
-                while ((_attrs & ATTR_LONG_NAME) == ATTR_LONG_NAME) {
+                while ((_attrs & ATTR_LONG_NAME) == ATTR_LONG_NAME && sector>=0) {
                     moveToSec(sector, offset + 11);
                     _attrs = (int) readVal(1);
                     if ((_attrs & ATTR_LONG_NAME) == ATTR_LONG_NAME) {
@@ -221,11 +219,14 @@ public class FatMaster {
                         ensureClusterEnd();
                     }
                 }
+                if(sector<0) return;
                 byte[] lnameBytes = new byte[list.size()];
                 for (int i = 0; i < lnameBytes.length; i++) {
                     lnameBytes[i] = list.get(lnameBytes.length - 1 - i);
                 }
                 moveToSec(sector, offset);
+                deProps = new HashMap<>();
+                deSprops = new HashMap<>();
                 readKeys(deKeys, deKeys_sz, deProps, deSprops);
                 offset += 32;
                 ensureClusterEnd();
@@ -271,6 +272,7 @@ public class FatMaster {
                         child.read(sector, offset);
                         sector = child.sector;
                         offset = child.offset;
+                        if(child.deProps == null) continue;
                         child.renewPointers(child.dataClusId);
                         children.put(child.getName(), child);
                     }
