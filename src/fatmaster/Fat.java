@@ -8,10 +8,16 @@ import java.util.HashMap;
 
 /**
  * This class deals with Fat volume.
- * @author georgeee
+ *
+ * @author George Agapov <george.agapov@gmail.com>
+ * @link https://github.com/georgeee/FAT-Master
+ * @license http://www.opensource.org/licenses/bsd-license.php
  */
 public class Fat {
 
+    /*
+     * Arrays of keys and arrays of sizes, used by readKeys()
+     */
     private static final String[] keys = {"BS_jmpBoot", "BS_OEMName", "BPB_BytsPerSec", "BPB_SecPerClus", "BPB_RsvdSecCnt", "BPB_NumFATs", "BPB_RootEntCnt", "BPB_TotSec16", "BPB_Media", "BPB_FATSz16", "BPB_SecPerTrk", "BPB_NumHeads", "BPB_HiddSec", "BPB_TotSec32"};
     private static final int[] keys_sz = {3, 8, 2, 1, 2, 1, 2, 2, 1, 2, 2, 2, 4, 4};
     private static final String[] keys12_16 = {"BS_DrvNum", "BS_Reserved1", "BS_BootSig", "BS_VolID", "BS_VolLab", "BS_FilSysType"};
@@ -21,17 +27,86 @@ public class Fat {
     private static final String[] keysFSInfo = {"FSI_LeadSig", "FSI_Reserved1", "FSI_StrucSig", "FSI_Free_Count", "FSI_Nxt_Free", "FSI_Reserved2", "FSI_TrailSig"};
     private static final int[] keysFSInfo_sz = {4, 480, 4, 4, 4, 12, 4};
     /**
-     * 12 - fat12, 16 - fat16, 32 - fat32
+     * Type of FAT volume: 12 - FAT12 16 - FAT16 32 - FAT32
      */
     short type;
+    /**
+     * EOC (end of chain mark minimal value)
+     */
     long EOC;
+    /**
+     * File with FAT volume
+     */
     RandomAccessFile file = null;
+    /**
+     * Map, storing number properties of volume
+     */
     HashMap<String, Long> props;
+    /**
+     * Map, storing number properties of volume
+     */
     HashMap<String, String> sprops;
+    /**
+     * Root directory instance
+     */
     DirectoryEntry root;
+    /**
+     * Buffer, used for reading bytes from file
+     */
     byte[] readBuffer;
-    int rsvdSecCnt, bytsPerSec, secPerClus, bytsPerClus, rootDirSectors, numFATs;
-    long fatSz, totSec, dataSec, countOfClusters, firstDataSector, freeSpace, totSpace;
+    /**
+     * Reserved sector count
+     */
+    int rsvdSecCnt;
+    /**
+     * Count of bytes in one sector
+     */
+    int bytsPerSec;
+    /**
+     * Count of sectors in one cluster
+     */
+    int secPerClus;
+    /**
+     * Count of bytes in one cluster
+     */
+    int bytsPerClus;
+    /**
+     * Count of sectors, reserved for storing root directory entries in
+     * FAT12/FAT16
+     */
+    int rootDirSectors;
+    /**
+     * Number of FAT tables
+     */
+    int numFATs;
+    /**
+     * Number of sectors, reserved for one FAT table
+     */
+    long fatSz;
+    /**
+     * Total amount of sectors
+     */
+    long totSec;
+    /**
+     * Total amount of sectors, reserved for data storage
+     */
+    long dataSec;
+    /**
+     * Count of clusters, reverved for data storage
+     */
+    long countOfClusters;
+    /**
+     * First sector, reserved for data
+     */
+    long firstDataSector;
+    /**
+     * Amount of free space on the volume in bytes
+     */
+    long freeSpace;
+    /**
+     * Amount of total space on the volume in bytes
+     */
+    long totSpace;
 
     public Fat() {
         readBuffer = new byte[1500];

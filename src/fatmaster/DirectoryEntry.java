@@ -12,20 +12,57 @@ import java.util.TreeMap;
 /**
  * This class is used to keep data about Directory (and to manage with it)
  *
- * @author georgeee
+ * @author George Agapov <george.agapov@gmail.com>
+ * @link https://github.com/georgeee/FAT-Master
+ * @license http://www.opensource.org/licenses/bsd-license.php
  */
 public class DirectoryEntry {
 
-    public HashMap<String, Long> deProps;
-    public HashMap<String, String> deSprops;
+    /**
+     * Map, storing number properties of volume
+     */
+    HashMap<String, Long> props;
+    /**
+     * Map, storing number properties of volume
+     */
+    HashMap<String, String> sprops;
+    /**
+     * Value of byte, storing attributes of entry
+     */
     private int attributes;
-    public String shortName, longName;
+    /**
+     * Short name of directory entr
+     */
+    public String shortName;
+    /**
+     * Long name of drectory entry
+     */
+    public String longName;
+    /**
+     * True if instance is root directory False otherwise
+     */
     public boolean isRootDir = false;
+    /**
+     * Fat parent instance
+     */
     private Fat parent;
+    /**
+     * Number of first cluster, where the data of directory entry is stored
+     */
     public long dataClus;
+    /**
+     * Map of children Keys - names, as returned by getName() Values -
+     * DirectoryEntry instances
+     */
     TreeMap<String, DirectoryEntry> children;
+    /*
+     * Array of keys and array of sizes, used by readKeys()
+     */
     private static final String[] deKeys = {"DIR_Name", "DIR_Attr", "DIR_NTRes", "DIR_CrtTimeTenth", "DIR_CrtTime", "DIR_CrtDate", "DIR_LstAccDate", "DIR_FstClusHI", "DIR_WrtTime", "DIR_WrtDate", "DIR_FstClusLO", "DIR_parent.fileSize"};
     private static final int[] deKeys_sz = {11, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 4};
+    /*
+     * Bitmasks for different attributes of entry
+     */
     public static final int ATTR_READ_ONLY = 0x01;
     public static final int ATTR_HIDDEN = 0x02;
     public static final int ATTR_SYSTEM = 0x04;
@@ -33,7 +70,13 @@ public class DirectoryEntry {
     public static final int ATTR_DIRECTORY = 0x10;
     public static final int ATTR_ARCHIVE = 0x20;
     public static final int ATTR_LONG_NAME = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID;
+    /**
+     * Short name of dot subdirectory
+     */
     public static final String DOT_SHORTNAME = ".          ";
+    /**
+     * Short name of dotdot subdirectory
+     */
     public static final String DOTDOT_SHORTNAME = "..         ";
 
     public DirectoryEntry(Fat parent) {
@@ -99,13 +142,13 @@ public class DirectoryEntry {
      * @param data byte[] with entry's data in first 32 indexes
      */
     void readGeneralEntry(byte[] data) {
-        deProps = new HashMap<>();
-        deSprops = new HashMap<>();
-        Fat.readKeysFromBuffer(data, deKeys, deKeys_sz, deProps, deSprops);
-        shortName = deSprops.get("DIR_Name");
-        attributes = deProps.get("DIR_Attr").intValue();
+        props = new HashMap<>();
+        sprops = new HashMap<>();
+        Fat.readKeysFromBuffer(data, deKeys, deKeys_sz, props, sprops);
+        shortName = sprops.get("DIR_Name");
+        attributes = props.get("DIR_Attr").intValue();
         if (!isRootDir) {
-            dataClus = ((deProps.get("DIR_FstClusHI") << 16) | deProps.get("DIR_FstClusLO"));
+            dataClus = ((props.get("DIR_FstClusHI") << 16) | props.get("DIR_FstClusLO"));
         }
     }
 
@@ -395,9 +438,9 @@ public class DirectoryEntry {
             printIndent(indent);
             System.out.println("Archive: " + is(ATTR_ARCHIVE));
             printIndent(indent);
-            System.out.println("Size (KB = 2^10 Bytes): " + (deProps.get("DIR_parent.fileSize") / Math.pow(2, 10)));
+            System.out.println("Size (KB = 2^10 Bytes): " + (props.get("DIR_parent.fileSize") / Math.pow(2, 10)));
             printIndent(indent);
-            System.out.println("Size (KB = 10^3 Bytes): " + (deProps.get("DIR_parent.fileSize") / Math.pow(10, 3)));
+            System.out.println("Size (KB = 10^3 Bytes): " + (props.get("DIR_parent.fileSize") / Math.pow(10, 3)));
         } else {
             printIndent(indent);
             System.out.println(getName());
@@ -451,7 +494,7 @@ public class DirectoryEntry {
             }
             byte[] buffer = new byte[(int) (parent.bytsPerClus)];
             long clus = dataClus;
-            long fSize = deProps.get("DIR_parent.fileSize");
+            long fSize = props.get("DIR_parent.fileSize");
             while (fSize > 0) {
                 parent.moveToClus(clus);
                 parent.file.read(buffer, 0, (int) Math.min(fSize, (long) buffer.length));

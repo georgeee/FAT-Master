@@ -1,12 +1,11 @@
-/*
- * To change this template, choose Tools | Templates
- * and open the template in the editor.
- */
 package fatmaster;
 
 /**
+ * Tiny class, used as container
  *
- * @author georgeee
+ * @author George Agapov <george.agapov@gmail.com>
+ * @link https://github.com/georgeee/FAT-Master
+ * @license http://www.opensource.org/licenses/bsd-license.php
  */
 public class LongPair {
 

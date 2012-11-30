@@ -4,8 +4,11 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * @author georgeee
  * Main class of this tiny utilite, serves as an interface
+ *
+ * @author George Agapov <george.agapov@gmail.com>
+ * @link https://github.com/georgeee/FAT-Master
+ * @license http://www.opensource.org/licenses/bsd-license.php
  */
 public class FatMaster {
 
@@ -73,13 +76,13 @@ public class FatMaster {
                     break;
                 case "-h":
                 case "--help":
-                    System.out.println("FAT Master - very simple utilite to read FAT partitions\n"
+                    System.out.println("FAT Master - very simple utilite to read FAT volumes\n"
                             + "It was created in november 2012 by George Agapov (george.agapov@gmail.com) as a task for the university\n"
                             + "How to use:\n"
                             + "java -jar [args]\n"
                             + "Possible arguments:\n"
-                            + "-f FILE    -    open FAT partition, located in FILE (it can be either image or path to device like /dev/sdc1)\n"
-                            + "-i [PATH]  -    print information about PATH, or about the whole partition if it's not specified (it prints the whole directory tree, with information about every file)\n"
+                            + "-f FILE    -    open FAT volume, located in FILE (it can be either image or path to device like /dev/sdc1)\n"
+                            + "-i [PATH]  -    print information about PATH, or about the whole volume if it's not specified (it prints the whole directory tree, with information about every file)\n"
                             + "-id NUM    -    specify the depth of directory tree, printed by \"-i [PATH]\"\n"
                             + "-l [PATH]  -    print the directory tree of PATH, no information about files, only names\n"
                             + "-ld NUM    -    specify the depth of directory tree, printed by \"-l [PATH]\"\n"
@@ -112,7 +115,6 @@ public class FatMaster {
         fat.close();
     }
     Fat fat;
-
 
     /**
      * @param args the command line arguments
