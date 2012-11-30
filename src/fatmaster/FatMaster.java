@@ -16,7 +16,7 @@ public class FatMaster {
     static final int INFO = (1 << 1);
     static final int LIST = (1 << 2);
     static final int PRINT = (1 << 3);
-    static final int SAVE = (1 << 0);
+    static final int SAVE = (1);
     int runningMode = 0;
 
     private boolean isNeeded(int mode_mask) {
@@ -100,7 +100,347 @@ public class FatMaster {
     }
     Fat fat;
 
-    class Fat {
+    static class Fat {
+
+        class LongPair {
+
+            public long a, b;
+
+            void set(long _a, long _b) {
+                a = _a;
+                b = _b;
+            }
+        }
+        static final String[] keys = {"BS_jmpBoot", "BS_OEMName", "BPB_BytsPerSec", "BPB_SecPerClus", "BPB_RsvdSecCnt", "BPB_NumFATs", "BPB_RootEntCnt", "BPB_TotSec16", "BPB_Media", "BPB_FATSz16", "BPB_SecPerTrk", "BPB_NumHeads", "BPB_HiddSec", "BPB_TotSec32"};
+        static final int[] keys_sz = {3, 8, 2, 1, 2, 1, 2, 2, 1, 2, 2, 2, 4, 4};
+        static final String[] keys12_16 = {"BS_DrvNum", "BS_Reserved1", "BS_BootSig", "BS_VolID", "BS_VolLab", "BS_FilSysType"};
+        static final int[] keys12_16_sz = {1, 1, 1, 4, 11, 8};
+        static final String[] keys32 = {"BPB_FATSz32", "BPB_ExtFlags", "BPB_FSVer", "BPB_RootClus", "BPB_FSInfo", "BPB_BkBootSec", "BPB_Reserved", "BS_DrvNum", "BS_Reserved1", "BS_BootSig", "BS_VolID", "BS_VolLab", "BS_FilSysType"};
+        static final int[] keys32_sz = {4, 2, 2, 4, 2, 2, 12, 1, 1, 1, 4, 11, 8};
+        static final String[] keysFSInfo = {"FSI_LeadSig", "FSI_Reserved1", "FSI_StrucSig", "FSI_Free_Count", "FSI_Nxt_Free", "FSI_Reserved2", "FSI_TrailSig"};
+        static final int[] keysFSInfo_sz = {4, 480, 4, 4, 4, 12, 4};
+        /**
+         * 12 - fat12, 16 - fat16, 32 - fat32
+         */
+        short type;
+        long EOC;
+        RandomAccessFile file = null;
+        HashMap<String, Long> props;
+        HashMap<String, String> sprops;
+        DirectoryEntry root;
+        byte[] readBuffer;
+        int rsvdSecCnt, bytsPerSec, secPerClus, bytsPerClus, rootDirSectors, numFATs;
+        long fatSz, totSec, dataSec, countOfClusters, firstDataSector, freeSpace, totSpace;
+
+        int readBytes(long clus, long offset, byte[] bytes, int bytes_offset, int count, LongPair nValues) throws IOException {
+            if (clus < 0) {
+                if (nValues != null) {
+                    nValues.set(clus, offset);
+                }
+                return 0;
+            }
+            for (; offset >= bytsPerClus; offset -= bytsPerClus) {
+                clus = getNextClus(clus);
+                if (clus < 0) {
+                    if (nValues != null) {
+                        nValues.set(-1, 0);
+                    }
+                    return 0;
+                }
+            }
+            int read = 0;
+            if (count > bytsPerClus - offset) {
+                moveToClus(clus, offset);
+                file.read(bytes, bytes_offset, bytsPerClus - (int) offset);
+                read += bytsPerClus - offset;
+                clus = getNextClus(clus);
+                offset = 0;
+            }
+            if (clus < 0) {
+                if (nValues != null) {
+                    nValues.set(-1, 0);
+                }
+                return read;
+            }
+            while (count >= bytsPerClus) {
+                moveToClus(clus);
+                file.read(bytes, bytes_offset + read, bytsPerClus);
+                read += bytsPerClus;
+                count -= bytsPerClus;
+                clus = getNextClus(clus);
+                if (clus < 0) {
+                    if (nValues != null) {
+                        nValues.set(-1, 0);
+                    }
+                    return read;
+                }
+            }
+            moveToClus(clus, offset);
+            file.read(bytes, bytes_offset + read, count);
+            if (nValues != null) {
+                nValues.set(clus, offset + count);
+            }
+            return read + count;
+        }
+
+        void moveToClus(long clus) throws IOException {
+            moveToClus(clus, 0);
+        }
+
+        void moveToClus(long clus, long offset) throws IOException {
+            file.seek(getFirstSecOfClus(clus) * bytsPerSec + offset);
+        }
+
+        void readKeys(String[] keys, int[] keys_sz, HashMap<String, Long> props, HashMap<String, String> sprops) throws IOException {
+            int summ = 0;
+            for (int i = 0; i < keys.length; i++) {
+                summ += keys_sz[i];
+            }
+            file.read(readBuffer, 0, summ);
+            readKeysFromBuffer(readBuffer, keys, keys_sz, props, sprops);
+        }
+
+        static void readKeysFromBuffer(byte[] buffer, String[] keys, int[] keys_sz, HashMap<String, Long> props, HashMap<String, String> sprops) {
+            int offset = 0;
+            for (int i = 0; i < keys.length; i++) {
+                if (keys_sz[i] < 5) {
+                    props.put(keys[i], getUnsignedIntFromBytes(buffer, offset, keys_sz[i]));
+                } else {
+                    sprops.put(keys[i], new String(buffer, offset, keys_sz[i]));
+                }
+                offset += keys_sz[i];
+            }
+        }
+
+        static long getUnsignedIntFromBytes(byte[] bytes) {
+            return getUnsignedIntFromBytes(bytes, 0);
+        }
+
+        static long getUnsignedIntFromBytes(byte[] bytes, int offset) {
+            return getUnsignedIntFromBytes(bytes, offset, bytes.length - offset);
+        }
+
+        static long getUnsignedIntFromBytes(byte[] bytes, int offset, int length) {
+            long val = 0;
+            for (int j = offset; j < length + offset && j < bytes.length; j++) {
+                val |= (0xFF & ((long) bytes[j])) << (8 * (j - offset));
+            }
+            val &= 0xFFFFFFFFL;
+            return val;
+        }
+
+        long readNumber(int size) throws IOException {
+            file.read(readBuffer, 0, size);
+            return getUnsignedIntFromBytes(readBuffer, 0, size);
+        }
+
+        void readKeys(String[] keys, int[] keys_sz) throws IOException {
+            readKeys(keys, keys_sz, props, sprops);
+        }
+
+        void moveToSec(long sector, long offset) throws IOException {
+            file.seek(bytsPerSec * sector + offset);
+        }
+
+        void moveToSec(long sector) throws IOException {
+            moveToSec(sector, 0);
+        }
+
+        long getNextClus(long clusId) throws IOException {
+            long fatOffset;
+            if (type == 12) {
+                fatOffset = clusId + clusId / 2;
+            } else if (type == 16) {
+                fatOffset = clusId * 2;
+            } else {
+                fatOffset = clusId * 4;
+            }
+            long fatSecNum = rsvdSecCnt + (fatOffset / bytsPerSec);
+            long fatEntOffset = fatOffset % bytsPerSec;
+            moveToSec(fatSecNum, fatEntOffset);
+            long val;
+            if (type == 12) {//12 bits
+                val = readNumber(2);
+                if ((clusId & 1) == 1) {
+                    val >>= 4;
+                } else {
+                    val &= 0x0FFF;
+                }
+            } else if (type == 16) {//16 bits
+                val = readNumber(2);
+            } else {//28 bits
+                val = readNumber(4) & 0x0FFFFFFFL;
+            }
+            if (val >= EOC) {
+                return -1;
+            }
+            return val;
+        }
+
+        public void write(String path, String _dest) throws IOException {
+            if (path == null) {
+                path = "/";
+            }
+            DirectoryEntry de = root.find(path);
+            if (de == null) {
+                System.err.println("No such path");
+                return;
+            }
+            if (!de.isDir() && _dest == null) {
+                de.write(null);
+                System.out.println();
+                return;
+            }
+            File _file = new File(_dest);
+            if (!_file.exists() && (_file.getParentFile() != null && !_file.getParentFile().exists())) {
+                System.err.println("Neither file nor it's parent directory exist");
+                return;
+            }
+            File dest;
+            if (!_file.exists()) {
+                dest = _file;
+            } else if (_file.isFile() && de.isDir()) {
+                System.err.println("Can't write directory to file");
+                return;
+            } else {
+                dest = new File(_file.getPath() + File.separator + de.getName());
+            }
+            de.write(dest);
+        }
+
+        public Fat() {
+            readBuffer = new byte[1500];
+        }
+
+        void open(File _file) throws IOException {
+            if (file != null) {
+                file.close();
+            }
+            file = new RandomAccessFile(_file, "r");
+            props = new HashMap<>();
+            sprops = new HashMap<>();
+
+            readKeys(keys, keys_sz);
+
+            numFATs = props.get("BPB_NumFATs").intValue();
+            bytsPerSec = props.get("BPB_BytsPerSec").intValue();
+            secPerClus = props.get("BPB_SecPerClus").intValue();
+            bytsPerClus = bytsPerSec * secPerClus;
+            rsvdSecCnt = props.get("BPB_RsvdSecCnt").intValue();
+
+            rootDirSectors = ((props.get("BPB_RootEntCnt").intValue() * 32) + (bytsPerSec - 1)) / bytsPerSec;
+            if (props.get("BPB_FATSz16") != 0) {
+                fatSz = props.get("BPB_FATSz16");
+            } else {
+                readKeys(keys32, keys32_sz);
+                fatSz = props.get("BPB_FATSz32");
+            }
+            if (props.get("BPB_TotSec16") != 0) {
+                totSec = props.get("BPB_TotSec16");
+            } else {
+                totSec = props.get("BPB_TotSec32");
+            }
+            dataSec = totSec - (rsvdSecCnt + (fatSz * numFATs) + rootDirSectors);
+            countOfClusters = dataSec / secPerClus;
+
+            //Exploring the type of our FAT
+            if (countOfClusters < 4085) {
+                //Volume is FAT12
+                type = 12;
+                EOC = 0x0FF8;
+
+            } else if (countOfClusters < 65525) {
+                //Volume is FAT16
+                type = 16;
+                EOC = 0xFFF8;
+            } else {
+                //Volume is FAT32
+                type = 32;
+                EOC = 0x0FFFFFF8L;
+            }
+            if (type == 32) {
+                if (props.get("BPB_FATSz32") == null) {
+                    readKeys(keys32, keys32_sz);
+                }
+            } else {
+                readKeys(keys12_16, keys12_16_sz);
+            }
+
+            firstDataSector = rsvdSecCnt + (numFATs * fatSz) + rootDirSectors;
+            freeSpace = -1;
+            if (type == 32) {
+                moveToSec(props.get("BPB_FSInfo"));
+                readKeys(keysFSInfo, keysFSInfo_sz);
+                if (props.get("FSI_Free_Count") != 0xFFFFFFFFL) {
+                    freeSpace = props.get("FSI_Free_Count") * bytsPerClus;
+                }
+            }
+
+            if (freeSpace == -1) {
+                moveToSec(rsvdSecCnt);
+                freeSpace = 0;
+                for (int i = 0; i < countOfClusters; i++) {
+                    if (getNextClus(i) == 0) {
+                        freeSpace++;
+                    }
+                }
+                freeSpace *= bytsPerClus;
+            }
+            totSpace = countOfClusters * bytsPerClus;
+            root = new DirectoryEntry();
+            root.isRootDir = true;
+            root.readRoot();
+        }
+
+        void close() throws IOException {
+            file.close();
+        }
+
+        long getFirstSecOfClus(long clusId) {
+            return ((clusId - 2) * secPerClus) + firstDataSector;
+        }
+
+        long getClusOfSec(long sector) {
+            sector -= firstDataSector;
+            sector /= secPerClus;
+            return sector + 2;
+        }
+
+        void print_info(String path, int depth, boolean verbose) throws IOException {
+            if (depth < 0) {
+                depth = Integer.MAX_VALUE;
+            }
+            if (path == null) {
+                if (verbose) {
+                    System.out.printf("Type of FAT: FAT%d\n", type);
+                    System.out.println("======= Space information =======");
+                    System.out.println("Free space (MB = 10^6 Bytes): " + ((long) (freeSpace / Math.pow(10, 6))));
+                    System.out.println("Free space (MB = 2^20 Bytes): " + ((long) (freeSpace >> 20)));
+                    System.out.println("Total space (MB = 10^6 Bytes): " + ((long) (totSpace / Math.pow(10, 6))));
+                    System.out.println("Total space (MB = 2^20 Bytes): " + ((long) (totSpace >> 20)));
+                    //Constraints
+                    System.out.println("======= Constraints =======");
+                    Object[] map_keys = props.keySet().toArray();
+                    Arrays.sort(map_keys);
+                    for (int i = 0; i < map_keys.length; i++) {
+                        System.out.printf("%s: %d\n", (String) map_keys[i], props.get((String) map_keys[i]));
+                    }
+                    map_keys = sprops.keySet().toArray();
+                    Arrays.sort(map_keys);
+                    for (int i = 0; i < map_keys.length; i++) {
+                        System.out.printf("%s: %s\n", (String) map_keys[i], sprops.get((String) map_keys[i]));
+                    }
+                    System.out.println("======= Root Directory =======");
+                }
+                path = "/";
+            }
+            DirectoryEntry de = root.find(path);
+            if (de == null) {
+                System.err.println("No such path");
+            } else {
+                de.print_info(depth, verbose);
+            }
+        }
 
         public class DirectoryEntry {
 
@@ -111,7 +451,6 @@ public class FatMaster {
             int attributes;
             String shortName, longName;
             public boolean isRootDir = false;
-            long sector, offset;
 
             public boolean isDir() {
                 return is(ATTR_DIRECTORY) || isRootDir;
@@ -125,21 +464,6 @@ public class FatMaster {
                     return shortName;
                 }
                 return longName;
-            }
-
-            void ensureClusterEnd() throws IOException {
-                long bytsPerSec = props.get("BPB_BytsPerSec");
-                long _sector = sector;
-                if (offset >= bytsPerSec) {
-                    sector += offset / bytsPerSec;
-                    offset %= bytsPerSec;
-                }
-                if ((type == 32 || !isRootDir) && getClusIdOfSec(sector) != getClusIdOfSec(_sector)) {
-                    sector = getNextClusId(getClusIdOfSec(sector));
-                    if (sector >= 0) {
-                        sector = firstSectorOfCluster(sector);
-                    }
-                }
             }
 
             public DirectoryEntry find(String path) throws IOException {
@@ -159,89 +483,147 @@ public class FatMaster {
                 return entry;
             }
 
-            public void read(long clusId) throws IOException {
-                read(firstSectorOfCluster(clusId), 0);
+            void readGeneralEntry(byte[] data) {
+                deProps = new HashMap<>();
+                deSprops = new HashMap<>();
+                readKeysFromBuffer(data, deKeys, deKeys_sz, deProps, deSprops);
+                shortName = deSprops.get("DIR_Name");
+                attributes = deProps.get("DIR_Attr").intValue();
+                if (!isRootDir) {
+                    dataClus = ((deProps.get("DIR_FstClusHI") << 16) | deProps.get("DIR_FstClusLO"));
+                }
             }
 
-            public void read(long _sector, long _offset) throws IOException {
-                sector = _sector;
-                offset = _offset;
-                ArrayList<Byte> list = new ArrayList<>();
-                int _attrs = ATTR_LONG_NAME;
-                //Going through long-name entries
-                while ((_attrs & ATTR_LONG_NAME) == ATTR_LONG_NAME && sector>=0) {
-                    moveToSec(sector, offset + 11);
-                    _attrs = (int) readVal(1);
-                    if ((_attrs & ATTR_LONG_NAME) == ATTR_LONG_NAME) {
-                        moveToSec(sector, offset);
-                        byte[] buffer = new byte[32];
-                        file.read(buffer, 0, 32);
-                        for (int i = 31; i >= 28; i -= 2) {
-                            byte s1 = buffer[i - 1];
-                            byte s2 = buffer[i];
-                            if (s1 == -1 && s2 == -1) {
-                                continue;
-                            }
-                            if (s1 == 0 && s2 == 0) {
-                                continue;
-                            }
-
-                            list.add(s1);
-                            list.add(s2);
-                        }
-                        for (int i = 25; i >= 14; i -= 2) {
-                            byte s1 = buffer[i - 1];
-                            byte s2 = buffer[i];
-                            if (s1 == -1 && s2 == -1) {
-                                continue;
-                            }
-                            if (s1 == 0 && s2 == 0) {
-                                continue;
-                            }
-
-                            list.add(s1);
-                            list.add(s2);
-                        }
-                        for (int i = 10; i >= 1; i -= 2) {
-                            byte s1 = buffer[i - 1];
-                            byte s2 = buffer[i];
-                            if (s1 == -1 && s2 == -1) {
-                                continue;
-                            }
-                            if (s1 == 0 && s2 == 0) {
-                                continue;
-                            }
-
-                            list.add(s1);
-                            list.add(s2);
-                        }
-                        offset += 32;
-                        ensureClusterEnd();
+            void readLNEntry(byte[] data, ArrayList<Byte> list) {
+                for (int i = 31; i >= 28; i -= 2) {
+                    byte s1 = data[i - 1];
+                    byte s2 = data[i];
+                    if (s1 == -1 && s2 == -1) {
+                        continue;
                     }
+                    if (s1 == 0 && s2 == 0) {
+                        continue;
+                    }
+
+                    list.add(s1);
+                    list.add(s2);
                 }
-                if(sector<0) return;
+                for (int i = 25; i >= 14; i -= 2) {
+                    byte s1 = data[i - 1];
+                    byte s2 = data[i];
+                    if (s1 == -1 && s2 == -1) {
+                        continue;
+                    }
+                    if (s1 == 0 && s2 == 0) {
+                        continue;
+                    }
+
+                    list.add(s1);
+                    list.add(s2);
+                }
+                for (int i = 10; i >= 1; i -= 2) {
+                    byte s1 = data[i - 1];
+                    byte s2 = data[i];
+                    if (s1 == -1 && s2 == -1) {
+                        continue;
+                    }
+                    if (s1 == 0 && s2 == 0) {
+                        continue;
+                    }
+
+                    list.add(s1);
+                    list.add(s2);
+                }
+            }
+
+            public boolean readRootChild(long offset, LongPair lp) throws IOException {
+                ArrayList<Byte> list = new ArrayList<>();
+                //Going through long-name entries
+                boolean started = false;
+                while (true) {
+                    if (offset + 32 > firstDataSector * bytsPerSec) {
+                        return false;
+                    }
+                    file.read(readBuffer, 0, 32);
+                    offset += 32;
+                    if (!started) {
+                        if (readBuffer[0] == ((byte) 0xE5)) {
+                            continue;
+                        } else if (readBuffer[0] == 0) {
+                            lp.a = -1;
+                            return false;
+                        } else {
+                            if (readBuffer[0] == ((byte) 0x05)) {
+                                readBuffer[0] = (byte) 0xE5;
+                            }
+                            started = true;
+                        }
+                    }
+                    attributes = (int) getUnsignedIntFromBytes(readBuffer, 11, 1);
+                    if (!is(ATTR_LONG_NAME)) {
+                        break;
+                    }
+                    readLNEntry(readBuffer, list);
+                }
+                lp.a = offset;
+                readEntry(readBuffer, list);
+                return true;
+            }
+
+            public boolean read(long clus, long offset, LongPair lp) throws IOException {
+                ArrayList<Byte> list = new ArrayList<>();
+                //Going through long-name entries
+                boolean started = false;
+                while (true) {
+                    int read = readBytes(clus, offset, readBuffer, 0, 32, lp);
+                    clus = lp.a;
+                    offset = lp.b;
+                    if (!started) {
+                        if (readBuffer[0] == ((byte) 0xE5)) {
+                            continue;
+                        } else if (readBuffer[0] == 0) {
+                            lp.a = -1;
+                            return false;
+                        } else {
+                            if (readBuffer[0] == ((byte) 0x05)) {
+                                readBuffer[0] = (byte) 0xE5;
+                            }
+                            started = true;
+                        }
+                    }
+                    attributes = (int) getUnsignedIntFromBytes(readBuffer, 11, 1);
+                    if (read < 32 || !is(ATTR_LONG_NAME)) {
+                        break;
+                    }
+                    readLNEntry(readBuffer, list);
+                }
+                if (clus < 0) {
+                    return false;
+                }
+                readEntry(readBuffer, list);
+                return true;
+            }
+
+            public void readEntry(byte[] generalEntry, ArrayList<Byte> list) throws UnsupportedEncodingException {
                 byte[] lnameBytes = new byte[list.size()];
                 for (int i = 0; i < lnameBytes.length; i++) {
                     lnameBytes[i] = list.get(lnameBytes.length - 1 - i);
                 }
-                moveToSec(sector, offset);
-                deProps = new HashMap<>();
-                deSprops = new HashMap<>();
-                readKeys(deKeys, deKeys_sz, deProps, deSprops);
-                offset += 32;
-                ensureClusterEnd();
-                shortName = deSprops.get("DIR_Name");
                 longName = new String(lnameBytes, "utf-16");
-                attributes = deProps.get("DIR_Attr").intValue();
-//                System.out.print(shortName+": HI "+Long.toHexString(deProps.get("DIR_FstClusHI"))+" LO "+);
-                dataClusId = ((deProps.get("DIR_FstClusHI") << 16) | deProps.get("DIR_FstClusLO"));
+                readGeneralEntry(generalEntry);
             }
 
-            public void renewPointers(long clusId) {
-                sector = firstSectorOfCluster(clusId);
-                offset = 0;
+            public void readRoot() throws IOException {
+                if (type == 32) {
+                    dataClus = props.get("BPB_RootClus");
+                    moveToClus(dataClus);
+                } else {
+                    moveToSec(fatSz * numFATs + rsvdSecCnt);
+                }
+                file.read(readBuffer, 0, 32);
+                readGeneralEntry(readBuffer);
             }
-            public long dataClusId;
+            public long dataClus;
             public final int ATTR_READ_ONLY = 0x01;
             public final int ATTR_HIDDEN = 0x02;
             public final int ATTR_SYSTEM = 0x04;
@@ -256,25 +638,31 @@ public class FatMaster {
             public void retrieveChildren() throws IOException {
                 if (children == null) {
                     children = new TreeMap<>();
-                    if(!isDir()) return;
-                    while (sector >= 0) {
-                        moveToSec(sector, offset);
-                        long fByte = readVal(1);
-                        if (fByte == 0xE5) {
-                            offset += 32;
-                            ensureClusterEnd();
-                            continue;
+                    if (!isDir()) {
+                        return;
+                    }
+                    LongPair lp = new LongPair();
+                    DirectoryEntry newChild = new DirectoryEntry();
+                    if (isRootDir && type != 32) {
+                        long offset = fatSz * numFATs + rsvdSecCnt + 32;
+                        while (offset != -1) {
+                            if (newChild.readRootChild(offset, lp)) {
+                                children.put(newChild.getName(), newChild);
+                                newChild = new DirectoryEntry();
+                            }
+                            offset = lp.a;
                         }
-                        if (fByte == 0) {
-                            break;
+                    } else {
+                        long clus = dataClus;
+                        long offset = isRootDir ? 32 : 0;
+                        while (clus != -1) {
+                            if (newChild.read(clus, offset, lp)) {
+                                children.put(newChild.getName(), newChild);
+                                newChild = new DirectoryEntry();
+                            }
+                            clus = lp.a;
+                            offset = lp.b;
                         }
-                        DirectoryEntry child = new DirectoryEntry();
-                        child.read(sector, offset);
-                        sector = child.sector;
-                        offset = child.offset;
-                        if(child.deProps == null) continue;
-                        child.renewPointers(child.dataClusId);
-                        children.put(child.getName(), child);
                     }
                 }
             }
@@ -324,11 +712,11 @@ public class FatMaster {
                     System.out.println(getName());
                 }
                 retrieveChildren();
-                if (verbose && (is(ATTR_DIRECTORY) || isRootDir)) {
+                if (verbose && isDir()) {
                     print_indent(indent);
-                    System.out.println("Children count: " + (children.size() - (isRootDir ? 0 : 2)));
+                    System.out.println("Children count: " + getRealChildrenCount());
                 }
-                if ((is(ATTR_DIRECTORY) || isRootDir) && (children.size() - (isRootDir ? 0 : 2)) > 0 && (childrenPrintDepth > indent)) {
+                if (isDir() && getRealChildrenCount() > 0 && (childrenPrintDepth > indent)) {
                     if (verbose) {
                         print_indent(indent);
                         System.out.println("Children:");
@@ -363,282 +751,24 @@ public class FatMaster {
                     } else {
                         out = new PrintStream(dest);
                     }
-                    byte[] buffer = new byte[(int) (props.get("BPB_BytsPerSec") * props.get("BPB_SecPerClus"))];
-                    long clusId = dataClusId;
+                    byte[] buffer = new byte[(int) (bytsPerClus)];
+                    long clus = dataClus;
                     long fSize = deProps.get("DIR_FileSize");
                     while (fSize > 0) {
-                        moveToSec(firstSectorOfCluster(clusId));
+                        moveToClus(clus);
                         file.read(buffer, 0, (int) Math.min(fSize, (long) buffer.length));
                         out.write(buffer, 0, (int) Math.min(fSize, (long) buffer.length));
                         fSize -= buffer.length;
-                        clusId = getNextClusId(clusId);
+                        clus = getNextClus(clus);
                     }
                     if (dest != null) {
                         out.close();
                     }
                 }
             }
-        }
-        /**
-         * 12 - fat12, 16 - fat16, 32 - fat32
-         */
-        short type;
-        long EOC;
-        final String[] keys = {"BS_jmpBoot", "BS_OEMName", "BPB_BytsPerSec", "BPB_SecPerClus", "BPB_RsvdSecCnt", "BPB_NumFATs", "BPB_RootEntCnt", "BPB_TotSec16", "BPB_Media", "BPB_FATSz16", "BPB_SecPerTrk", "BPB_NumHeads", "BPB_HiddSec", "BPB_TotSec32"};
-        final int[] keys_sz = {3, 8, 2, 1, 2, 1, 2, 2, 1, 2, 2, 2, 4, 4};
-        final String[] keys12_16 = {"BS_DrvNum", "BS_Reserved1", "BS_BootSig", "BS_VolID", "BS_VolLab", "BS_FilSysType"};
-        final int[] keys12_16_sz = {1, 1, 1, 4, 11, 8};
-        final String[] keys32 = {"BPB_FATSz32", "BPB_ExtFlags", "BPB_FSVer", "BPB_RootClus", "BPB_FSInfo", "BPB_BkBootSec", "BPB_Reserved", "BS_DrvNum", "BS_Reserved1", "BS_BootSig", "BS_VolID", "BS_VolLab", "BS_FilSysType"};
-        final int[] keys32_sz = {4, 2, 2, 4, 2, 2, 12, 1, 1, 1, 4, 11, 8};
-        final String[] keysFSInfo = {"FSI_LeadSig", "FSI_Reserved1", "FSI_StrucSig", "FSI_Free_Count", "FSI_Nxt_Free", "FSI_Reserved2", "FSI_TrailSig"};
-        final int[] keysFSInfo_sz = {4, 480, 4, 4, 4, 12, 4};
-        RandomAccessFile file = null;
-        HashMap<String, Long> props;
-        HashMap<String, String> sprops;
-        DirectoryEntry root;
-        byte[] buffer = null;
 
-        void readKeys(String[] keys, int[] keys_sz, HashMap<String, Long> props, HashMap<String, String> sprops) throws IOException {
-            if (buffer == null) {
-                buffer = new byte[500];
-            }
-            for (int i = 0; i < keys.length; i++) {
-                file.read(buffer, 0, keys_sz[i]);
-                if (keys_sz[i] < 5) {
-                    props.put(keys[i], getLongFromBytes(buffer, 0, keys_sz[i]));
-                } else {
-                    sprops.put(keys[i], new String(buffer, 0, keys_sz[i]));
-                }
-            }
-        }
-
-        long getLongFromBytes(byte[] bytes) {
-            return getLongFromBytes(bytes, 0);
-        }
-
-        long getLongFromBytes(byte[] bytes, int offset) {
-            return getLongFromBytes(bytes, offset, bytes.length - offset);
-        }
-
-        long getLongFromBytes(byte[] bytes, int offset, int length) {
-            long val = 0;
-            for (int j = offset; j < length + offset && j < bytes.length; j++) {
-                val |= (0xFF & ((long) bytes[j])) << (8 * (j));
-            }
-            val &= 0xFFFFFFFFL;
-            return val;
-        }
-
-        long readVal(int size) throws IOException {
-            byte _buffer[] = new byte[size];
-            file.read(_buffer, 0, size);
-            return getLongFromBytes(_buffer);
-        }
-
-        void readKeys(String[] keys, int[] keys_sz) throws IOException {
-            readKeys(keys, keys_sz, props, sprops);
-        }
-        long rootDirSectors, fatSz, totSec, dataSec, countOfClusters, firstDataSector, freeSpace, totSpace;
-
-        void moveToSec(long secId, long offset) throws IOException {
-            try{
-            file.seek(props.get("BPB_BytsPerSec") * secId + offset);
-            }catch(Exception ex){
-                System.err.println(secId+" "+offset);
-                System.exit(1);
-            }
-        }
-
-        void moveToSec(long secId) throws IOException {
-            moveToSec(secId, 0);
-        }
-
-        long getNextClusId(long clusId) throws IOException {
-            long fatOffset;
-            if (type == 12) {
-                fatOffset = clusId + clusId / 2;
-            } else if (type == 16) {
-                fatOffset = clusId * 2;
-            } else {
-                fatOffset = clusId * 4;
-            }
-            long fatSecNum = props.get("BPB_RsvdSecCnt") + (fatOffset / props.get("BPB_BytsPerSec"));
-            long fatEntOffset = fatOffset % props.get("BPB_BytsPerSec");
-            moveToSec(fatSecNum, fatEntOffset);
-            long val;
-            if (type == 12) {//12 bits
-                val = readVal(2);
-                if ((clusId & 1) == 1) {
-                    val >>= 4;
-                } else {
-                    val &= 0x0FFF;
-                }
-            } else if (type == 16) {//16 bits
-                val = readVal(2);
-            } else {//28 bits
-                val = readVal(4) & 0x0FFFFFFFL;
-            }
-            if (val >= EOC) {
-                return -1;
-            }
-            return val;
-        }
-
-        public void write(String path, String _dest) throws IOException {
-            if (path == null) {
-                path = "/";
-            }
-            DirectoryEntry de = root.find(path);
-            if (de == null) {
-                System.err.println("No such path");
-                return;
-            }
-            if (!de.isDir() && _dest == null) {
-                de.write(null);
-                System.out.println();
-                return;
-            }
-            File _file = new File(_dest);
-            if (!_file.exists() && (_file.getParentFile()!=null&&!_file.getParentFile().exists())) {
-                System.err.println("Neither file nor it's parent directory exist");
-                return;
-            }
-            File dest;
-            if (!_file.exists()) {
-                dest = _file;
-            } else if (_file.isFile() && de.isDir()) {
-                System.err.println("Can't write directory to file");
-                return;
-            } else {
-                dest = new File(_file.getPath() + File.separator + de.getName());
-            }
-            de.write(dest);
-        }
-
-        void open(File _file) throws IOException {
-            if (file != null) {
-                file.close();
-            }
-            file = new RandomAccessFile(_file, "r");
-            props = new HashMap<>();
-            sprops = new HashMap<>();
-
-            readKeys(keys, keys_sz);
-
-            //Exploring the type of our FAT
-            rootDirSectors = ((props.get("BPB_RootEntCnt") * 32) + (props.get("BPB_BytsPerSec") - 1)) / props.get("BPB_BytsPerSec");
-            if (props.get("BPB_FATSz16") != 0) {
-                fatSz = props.get("BPB_FATSz16");
-            } else {
-                readKeys(keys32, keys32_sz);
-                fatSz = props.get("BPB_FATSz32");
-            }
-            if (props.get("BPB_TotSec16") != 0) {
-                totSec = props.get("BPB_TotSec16");
-            } else {
-                totSec = props.get("BPB_TotSec32");
-            }
-            dataSec = totSec - (props.get("BPB_RsvdSecCnt") + (fatSz * props.get("BPB_NumFATs")) + rootDirSectors);
-            countOfClusters = dataSec / props.get("BPB_SecPerClus");
-            if (countOfClusters < 4085) {
-                //Volume is FAT12
-                type = 12;
-                EOC = 0x0FF8;
-
-            } else if (countOfClusters < 65525) {
-                //Volume is FAT16
-                type = 16;
-                EOC = 0xFFF8;
-            } else {
-                //Volume is FAT32
-                type = 32;
-                EOC = 0x0FFFFFF8L;
-            }
-            if (type == 32) {
-                if (props.get("BPB_FATSz32") == null) {
-                    readKeys(keys32, keys32_sz);
-                }
-            } else {
-                readKeys(keys12_16, keys12_16_sz);
-            }
-
-            firstDataSector = props.get("BPB_RsvdSecCnt") + (props.get("BPB_NumFATs") * fatSz) + rootDirSectors;
-            freeSpace = -1;
-            if (type == 32) {
-                moveToSec(props.get("BPB_FSInfo"));
-                readKeys(keysFSInfo, keysFSInfo_sz);
-                if (props.get("FSI_Free_Count") != 0xFFFFFFFFL) {
-                    freeSpace = props.get("FSI_Free_Count") * props.get("BPB_SecPerClus") * props.get("BPB_BytsPerSec");
-                }
-            }
-
-            if (freeSpace == -1) {
-                moveToSec(props.get("BPB_RsvdSecCnt"));
-                freeSpace = 0;
-                for (int i = 0; i < countOfClusters; i++) {
-                    if (getNextClusId(i) == 0) {
-                        freeSpace++;
-                    }
-                }
-                freeSpace *= props.get("BPB_SecPerClus") * props.get("BPB_BytsPerSec");
-            }
-            totSpace = countOfClusters * props.get("BPB_SecPerClus") * props.get("BPB_BytsPerSec");
-            root = new DirectoryEntry();
-            root.isRootDir = true;
-            if (type == 32) {
-                root.read(props.get("BPB_RootClus"));
-            } else {
-                root.read(fatSz * props.get("BPB_NumFATs") + props.get("BPB_RsvdSecCnt"), 0);
-            }
-        }
-
-        long firstSectorOfCluster(long clusId) {
-            return ((clusId - 2) * props.get("BPB_SecPerClus")) + firstDataSector;
-        }
-
-        long getClusIdOfSec(long sector) {
-            sector -= firstDataSector;
-            sector /= props.get("BPB_SecPerClus");
-            return sector + 2;
-        }
-
-        void close() throws IOException {
-            file.close();
-        }
-
-        void print_info(String path, int depth, boolean verbose) throws IOException {
-            if (depth < 0) {
-                depth = Integer.MAX_VALUE;
-            }
-            if (path == null) {
-                if (verbose) {
-                    System.out.printf("Type of FAT: FAT%d\n", type);
-                    System.out.println("======= Space information =======");
-                    System.out.println("Free space (MB = 10^6 Bytes): " + ((long) (freeSpace / Math.pow(10, 6))));
-                    System.out.println("Free space (MB = 2^20 Bytes): " + ((long) (freeSpace >> 20)));
-                    System.out.println("Total space (MB = 10^6 Bytes): " + ((long) (totSpace / Math.pow(10, 6))));
-                    System.out.println("Total space (MB = 2^20 Bytes): " + ((long) (totSpace >> 20)));
-                    //Constraints
-                    System.out.println("======= Constraints =======");
-                    Object[] map_keys = props.keySet().toArray();
-                    Arrays.sort(map_keys);
-                    for (int i = 0; i < map_keys.length; i++) {
-                        System.out.printf("%s: %d\n", (String) map_keys[i], props.get((String) map_keys[i]));
-                    }
-                    map_keys = sprops.keySet().toArray();
-                    Arrays.sort(map_keys);
-                    for (int i = 0; i < map_keys.length; i++) {
-                        System.out.printf("%s: %s\n", (String) map_keys[i], sprops.get((String) map_keys[i]));
-                    }
-                    System.out.println("======= Root Directory =======");
-                }
-                path = "/";
-            }
-            DirectoryEntry de = root.find(path);
-            if (de == null) {
-                System.err.println("No such path");
-            } else {
-                de.print_info(depth, verbose);
+            private int getRealChildrenCount() {
+                return (children.size() - (isRootDir ? 0 : 2));
             }
         }
     }
