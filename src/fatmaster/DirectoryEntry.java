@@ -58,7 +58,7 @@ public class DirectoryEntry {
     /*
      * Array of keys and array of sizes, used by readKeys()
      */
-    private static final String[] deKeys = {"DIR_Name", "DIR_Attr", "DIR_NTRes", "DIR_CrtTimeTenth", "DIR_CrtTime", "DIR_CrtDate", "DIR_LstAccDate", "DIR_FstClusHI", "DIR_WrtTime", "DIR_WrtDate", "DIR_FstClusLO", "DIR_parent.fileSize"};
+    private static final String[] deKeys = {"DIR_Name", "DIR_Attr", "DIR_NTRes", "DIR_CrtTimeTenth", "DIR_CrtTime", "DIR_CrtDate", "DIR_LstAccDate", "DIR_FstClusHI", "DIR_WrtTime", "DIR_WrtDate", "DIR_FstClusLO", "DIR_FileSize"};
     private static final int[] deKeys_sz = {11, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 4};
     /*
      * Bitmasks for different attributes of entry
@@ -82,6 +82,11 @@ public class DirectoryEntry {
     public DirectoryEntry(Fat parent) {
         this.parent = parent;
         children = null;
+        attributes = 0;
+        dataClus = -1;
+        shortName = longName = null;
+        props = new HashMap<>();
+        sprops = new HashMap<>();
     }
 
     /**
@@ -142,8 +147,6 @@ public class DirectoryEntry {
      * @param data byte[] with entry's data in first 32 indexes
      */
     void readGeneralEntry(byte[] data) {
-        props = new HashMap<>();
-        sprops = new HashMap<>();
         Fat.readKeysFromBuffer(data, deKeys, deKeys_sz, props, sprops);
         shortName = sprops.get("DIR_Name");
         attributes = props.get("DIR_Attr").intValue();
@@ -325,8 +328,6 @@ public class DirectoryEntry {
         } else {
             parent.moveToSec(parent.fatSz * parent.numFATs + parent.rsvdSecCnt);
         }
-        parent.file.read(parent.readBuffer, 0, 32);
-        readGeneralEntry(parent.readBuffer);
     }
 
     /**
@@ -345,20 +346,28 @@ public class DirectoryEntry {
             LongPair lp = new LongPair();
             DirectoryEntry newChild = new DirectoryEntry(parent);
             if (isRootDir && parent.type != 32) {
-                long offset = parent.fatSz * parent.numFATs + parent.rsvdSecCnt + 32;
+                long offset = parent.fatSz * parent.numFATs + parent.rsvdSecCnt;
                 while (offset != -1) {
                     if (newChild.readRootChild(offset, lp)) {
-                        children.put(newChild.getName(), newChild);
+                        if (newChild.is(ATTR_VOLUME_ID) && isRootDir) {
+                            retrieveAttributesFromEntry(newChild);
+                        } else {
+                            children.put(newChild.getName(), newChild);
+                        }
                         newChild = new DirectoryEntry(parent);
                     }
                     offset = lp.a;
                 }
             } else {
                 long clus = dataClus;
-                long offset = isRootDir ? 32 : 0;
+                long offset = 0;
                 while (clus != -1) {
                     if (newChild.read(clus, offset, lp)) {
-                        children.put(newChild.getName(), newChild);
+                        if (newChild.is(ATTR_VOLUME_ID) && isRootDir) {
+                            retrieveAttributesFromEntry(newChild);
+                        } else {
+                            children.put(newChild.getName(), newChild);
+                        }
                         newChild = new DirectoryEntry(parent);
                     }
                     clus = lp.a;
@@ -366,6 +375,29 @@ public class DirectoryEntry {
                 }
             }
         }
+    }
+
+    /**
+     * Copies information form given DirentoryEntry instance Doesn't copy
+     * children, only properties, attributes, short/long names and number of
+     * data cluster
+     *
+     * @param entry Entry with information to copy
+     */
+    private void retrieveAttributesFromEntry(DirectoryEntry entry) {
+        props = (HashMap<String, Long>) entry.props.clone();
+        sprops = (HashMap<String, String>) entry.sprops.clone();
+        shortName = entry.shortName;
+        longName = entry.longName;
+        attributes = entry.attributes;
+        if (!isRootDir) {
+            dataClus = entry.dataClus;
+        }
+    }
+
+    public long getFileSize() {
+        Long fsize = props.get("DIR_FileSize");
+        return fsize == null ? 0 : fsize;
     }
 
     /**
@@ -420,6 +452,7 @@ public class DirectoryEntry {
      * @throws IOException
      */
     public void printInfo(int childrenPrintDepth, boolean verbose, int indent) throws IOException {
+        retrieveChildren();
         if (verbose) {
             printIndent(indent);
             System.out.println("----------------------");
@@ -438,14 +471,13 @@ public class DirectoryEntry {
             printIndent(indent);
             System.out.println("Archive: " + is(ATTR_ARCHIVE));
             printIndent(indent);
-            System.out.println("Size (KB = 2^10 Bytes): " + (props.get("DIR_parent.fileSize") / Math.pow(2, 10)));
+            System.out.println("Size (KB = 2^10 Bytes): " + (getFileSize() / Math.pow(2, 10)));
             printIndent(indent);
-            System.out.println("Size (KB = 10^3 Bytes): " + (props.get("DIR_parent.fileSize") / Math.pow(10, 3)));
+            System.out.println("Size (KB = 10^3 Bytes): " + (getFileSize() / Math.pow(10, 3)));
         } else {
             printIndent(indent);
             System.out.println(getName());
         }
-        retrieveChildren();
         if (verbose && isDir()) {
             printIndent(indent);
             System.out.println("Children count: " + getRealChildrenCount());
@@ -494,7 +526,7 @@ public class DirectoryEntry {
             }
             byte[] buffer = new byte[(int) (parent.bytsPerClus)];
             long clus = dataClus;
-            long fSize = props.get("DIR_parent.fileSize");
+            long fSize = props.get("DIR_FileSize");
             while (fSize > 0) {
                 parent.moveToClus(clus);
                 parent.file.read(buffer, 0, (int) Math.min(fSize, (long) buffer.length));
